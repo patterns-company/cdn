@@ -1,5 +1,5 @@
 (function () {
-  const queue = window.ptrns.q || [];
+  const queue = window.ptrns?.q || [];
   const config = {};
 
   // Process queued calls
@@ -10,14 +10,18 @@
     }
   });
 
-  // Ensure the required ID is available
-  if (!config.id) {
-    console.error("Patterns: 'id' parameter is required during initialization.");
+  // Get the pattern ID from the query string
+  const urlParams = new URLSearchParams(window.location.search);
+  const patternIdFromQuery = urlParams.get('pattern');
+
+  // Proceed only if pattern ID exists
+  if (!patternIdFromQuery) {
+    console.warn("Patterns: 'pattern' parameter is missing from the query string.");
     return;
   }
 
   // Define the API endpoint
-  const apiEndpoint = `https://api.patterns.company/v1/pattern/${config.id}`;
+  const apiEndpoint = `https://api.patterns.company/v1/pattern/${config.id}/${patternIdFromQuery}`;
 
   // Fetch the pattern data
   fetch(apiEndpoint)
