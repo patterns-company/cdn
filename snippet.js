@@ -32,13 +32,13 @@
       return response.json();
     })
     .then((data) => {
-      if (!Array.isArray(data) || data.length === 0) {
+      if (!Array.isArray(data.content) || data.content.length === 0) {
         console.warn("Patterns: No valid pattern data found.");
         return;
       }
 
       // Process the first pattern in the response
-      const pattern = data[0];
+      const pattern = data;
       if (pattern.status !== "generating" || !pattern.content) {
         console.warn("Patterns: Pattern data is not ready or missing content.");
         return;
