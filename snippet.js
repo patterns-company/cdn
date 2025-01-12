@@ -1,5 +1,5 @@
 (function () {
-  const queue = window.ptns.q || [];
+  const queue = window.ptrns.q || [];
   const config = {};
 
   // Process queued calls
@@ -12,7 +12,7 @@
 
   // Ensure the required ID is available
   if (!config.id) {
-    console.error("Ptns: 'id' parameter is required during initialization.");
+    console.error("Patterns: 'id' parameter is required during initialization.");
     return;
   }
 
@@ -29,14 +29,14 @@
     })
     .then((data) => {
       if (!Array.isArray(data) || data.length === 0) {
-        console.warn("Ptns: No valid pattern data found.");
+        console.warn("Patterns: No valid pattern data found.");
         return;
       }
 
       // Process the first pattern in the response
       const pattern = data[0];
       if (pattern.status !== "generating" || !pattern.content) {
-        console.warn("Ptns: Pattern data is not ready or missing content.");
+        console.warn("Patterns: Pattern data is not ready or missing content.");
         return;
       }
 
@@ -51,6 +51,6 @@
       });
     })
     .catch((error) => {
-      console.error("Ptns: Error fetching or processing pattern data:", error);
+      console.error("Patterns: Error fetching or processing pattern data:", error);
     });
 })();
