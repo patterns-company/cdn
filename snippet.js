@@ -44,12 +44,24 @@
         return;
       }
 
+      // Define a mapping of types to attribute names
+      const typeToAttribute = {
+        text: "textContent",
+        href: "href",
+        src: "src"
+      };
+
       // Iterate over the content field and update the DOM
       pattern.content.forEach((item) => {
-        if (item.selector && item.type === "text" && item.payload) {
-          const elements = document.querySelectorAll(item.selector);
-          elements.forEach((el) => {
-            el.textContent = item.payload;
+        const attribute = typeToAttribute[item.type];
+        if (item.selector && attribute && item.payload) {
+            const elements = document.querySelectorAll(item.selector);
+            elements.forEach((el) => {
+            if (attribute === "textContent") {
+              el.textContent = item.payload;
+            } else {
+              el.setAttribute(attribute, item.payload);
+            }
           });
         }
       });
