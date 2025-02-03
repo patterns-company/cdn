@@ -48,7 +48,8 @@
       const typeToAttribute = {
         text: "textContent",
         href: "href",
-        src: "src"
+        src: "src",
+        html: "innerHTML"
       };
 
       // Iterate over the content field and update the DOM
@@ -59,6 +60,8 @@
             elements.forEach((el) => {
             if (attribute === "textContent") {
               el.textContent = item.payload;
+            } else if (attribute === "innerHTML") {
+              el.innerHTML = item.payload;
             } else {
               el.setAttribute(attribute, item.payload);
             }
