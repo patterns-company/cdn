@@ -1,8 +1,11 @@
 (function () {
   const queue = window.ptrns?.q || [];
   const config = {};
+  let storedPattern = null;        // Holds the fetched pattern
+  let updatedElements = [];        // Tracks elements updated by the script
+  let observer = null;            // Will hold the MutationObserver reference
 
-  // Process queued calls, e.g. config.enforce = true
+  // Process queued calls (e.g., { id: 'MY_PROJECT_ID', enforce: true })
   queue.forEach((args) => {
     const [command, params] = args;
     if (command === 'init') {
@@ -23,7 +26,47 @@
   // Define the API endpoint
   const apiEndpoint = `https://api.patterns.company/v1/pattern/${config.id}/${patternIdFromQuery}`;
 
-  // Fetch the pattern data
+  // Core function to apply the pattern data to the DOM
+  function applyPatternData(pattern) {
+    if (!pattern || !Array.isArray(pattern.content)) {
+      console.warn("Patterns: No valid pattern data to apply.");
+      return;
+    }
+
+    // Define a mapping of types to attribute names
+    const typeToAttribute = {
+      text: "textContent",
+      href: "href",
+      src: "src",
+      html: "innerHTML"
+    };
+
+    // Clear the previously tracked elements so we don't double-track them
+    updatedElements = [];
+
+    // Iterate over the pattern content field and update the DOM
+    pattern.content.forEach((item) => {
+      const attribute = typeToAttribute[item.type];
+      if (item.selector && attribute && item.payload) {
+        const elements = document.querySelectorAll(item.selector);
+        elements.forEach((el) => {
+          // Apply the update
+          if (attribute === "textContent") {
+            el.textContent = item.payload;
+          } else if (attribute === "innerHTML") {
+            el.innerHTML = item.payload;
+          } else {
+            el.setAttribute(attribute, item.payload);
+          }
+
+          // Store the data needed to re-apply later if config.enforce is true
+          updatedElements.push({ element: el, attribute, value: item.payload });
+        });
+      }
+    });
+  }
+
+  // Fetch pattern data
   fetch(apiEndpoint)
     .then((response) => {
       if (!response.ok) {
@@ -37,58 +80,32 @@
         return;
       }
 
-      // Process the first pattern in the response
+      // Assume the response is a single pattern object
       const pattern = data;
       if (pattern.status !== "generating" || !pattern.content) {
         console.warn("Patterns: Pattern data is not ready or missing content.");
         return;
       }
 
-      // Define a mapping of types to attribute names
-      const typeToAttribute = {
-        text: "textContent",
-        href: "href",
-        src: "src",
-        html: "innerHTML"
-      };
+      // Store the fetched pattern globally so we can re-apply it
+      storedPattern = pattern;
 
-      // Keep track of which elements were updated (for the enforce option)
-      const updatedElements = [];
+      // Apply the pattern data to the DOM
+      applyPatternData(storedPattern);
 
-      // Iterate over the content field and update the DOM
-      pattern.content.forEach((item) => {
-        const attribute = typeToAttribute[item.type];
-        if (item.selector && attribute && item.payload) {
-          const elements = document.querySelectorAll(item.selector);
-          elements.forEach((el) => {
-            // Apply the update
-            if (attribute === "textContent") {
-              el.textContent = item.payload;
-            } else if (attribute === "innerHTML") {
-              el.innerHTML = item.payload;
-            } else {
-              el.setAttribute(attribute, item.payload);
-            }
-
-            // Store the data needed to re-apply later if config.enforce is true
-            updatedElements.push({ element: el, attribute, value: item.payload });
-          });
-        }
-      });
-
-      // Dispatch a custom event after updates are complete
+      // Dispatch an event after initial render
       const renderedEvent = new CustomEvent("patternsRendered", {
         detail: { patternId: patternIdFromQuery }
       });
       document.dispatchEvent(renderedEvent);
 
-      // --- OPTIONAL: Enforce pattern changes if config.enforce is true ---
+      // Optional: Enforce mode using MutationObserver
       if (config.enforce === true) {
         console.info("Patterns: Enforce mode is ON. Monitoring DOM changes for updated elements.");
 
         let isProgrammaticChange = false;
-        const observer = new MutationObserver((mutations) => {
-          // Avoid re-triggering if the script itself is making the change
+        observer = new MutationObserver((mutations) => {
+          // Prevent infinite loop if we are re-applying the same values
           if (isProgrammaticChange) {
             isProgrammaticChange = false;
             return;
@@ -101,33 +118,37 @@
               if (!parentEl) return;
 
               // Check if this parentEl is one of our updated elements
-              const found = updatedElements.find(u => u.element === parentEl && u.attribute === "textContent");
+              const found = updatedElements.find(
+                (u) => u.element === parentEl && u.attribute === "textContent"
+              );
               if (found) {
                 // If the text changed from our enforced value, revert it
                 if (parentEl.textContent !== found.value) {
                   isProgrammaticChange = true;
                   parentEl.textContent = found.value;
-                  console.warn(`Patterns (enforce): Reverted textContent for selector: ${parentEl.tagName}.`);
+                  console.warn(
+                    `Patterns (enforce): Reverted textContent for ${parentEl.tagName}.`
+                  );
                 }
               }
             }
-
             // If it's an attribute change
             else if (mutation.type === "attributes") {
               const targetEl = mutation.target;
               const attrName = mutation.attributeName;
 
-              // Check if this element is one we updated, and if the changed attribute matches
-              const found = updatedElements.find(u => u.element === targetEl);
-              if (found && (found.attribute === attrName || found.attribute === "textContent")) {
-                // For textContent, there's no "textContent" attribute, so we skip that
+              const found = updatedElements.find((u) => u.element === targetEl);
+              if (found) {
+                // For textContent, there's no attribute, so skip
                 if (found.attribute === attrName) {
-                  // If the current attribute value differs from the enforced one, revert it
+                  // If the current attribute value differs from the enforced one, revert
                   const currentVal = targetEl.getAttribute(attrName);
                   if (currentVal !== found.value) {
                     isProgrammaticChange = true;
                     targetEl.setAttribute(attrName, found.value);
-                    console.warn(`Patterns (enforce): Reverted ${attrName} for selector: ${targetEl.tagName}.`);
+                    console.warn(
+                      `Patterns (enforce): Reverted ${attrName} for ${targetEl.tagName}.`
+                    );
                   }
                 }
               }
@@ -135,18 +156,30 @@
           });
         });
 
-        // Observe the entire document body for attribute or characterData changes
+        // Observe the entire document body for attribute/characterData changes
         observer.observe(document.body, {
           subtree: true,
-          childList: true,      // needed to observe text node additions/removals
+          childList: true,
           attributes: true,
           characterData: true
         });
       }
-      // --- END OPTIONAL ENFORCE SECTION ---
-
     })
     .catch((error) => {
       console.error("Patterns: Error fetching or processing pattern data:", error);
     });
+
+  /**
+   * Public method to re-apply the stored pattern data to the DOM.
+   * Call `window.ptrns.updatePatternDOM()` whenever you want to “force” a re-render.
+   */
+  window.ptrns = window.ptrns || {};
+  window.ptrns.updatePatternDOM = function () {
+    if (!storedPattern) {
+      console.warn("Patterns: No stored pattern data to re-apply.");
+      return;
+    }
+    console.info("Patterns: Re-applying stored pattern data to the DOM.");
+    applyPatternData(storedPattern);
+  };
 })();
