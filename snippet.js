@@ -56,8 +56,8 @@
       pattern.content.forEach((item) => {
         const attribute = typeToAttribute[item.type];
         if (item.selector && attribute && item.payload) {
-            const elements = document.querySelectorAll(item.selector);
-            elements.forEach((el) => {
+          const elements = document.querySelectorAll(item.selector);
+          elements.forEach((el) => {
             if (attribute === "textContent") {
               el.textContent = item.payload;
             } else if (attribute === "innerHTML") {
@@ -68,6 +68,13 @@
           });
         }
       });
+
+      // Dispatch a custom event after updates are complete
+      const event = new CustomEvent("patternsRendered", { 
+        detail: { patternId: patternIdFromQuery }
+      });
+      document.dispatchEvent(event);
+
     })
     .catch((error) => {
       console.error("Patterns: Error fetching or processing pattern data:", error);
