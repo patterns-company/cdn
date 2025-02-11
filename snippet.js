@@ -1,6 +1,8 @@
 (function () {
   const queue = window.ptrns?.q || [];
-  const config = {};
+  const config = {
+    enforce: true
+  };
   let storedPattern = null;        // Holds the fetched pattern
   let updatedElements = [];        // Tracks elements updated by the script
   let observer = null;            // Will hold the MutationObserver reference
