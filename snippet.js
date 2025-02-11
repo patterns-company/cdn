@@ -1,13 +1,11 @@
 (function () {
   const queue = window.ptrns?.q || [];
-  const config = {
-    enforce: true
-  };
-  let storedPattern = null;        // Holds the fetched pattern
-  let updatedElements = [];        // Tracks elements updated by the script
-  let observer = null;            // Will hold the MutationObserver reference
+  const config = {};
+  let storedPattern = null;   // Will hold the fetched pattern data
+  let observer = null;        // Will hold the MutationObserver if enforce is on
+  let enforceLock = false;    // Prevent re-observing our own changes
 
-  // Process queued calls (e.g., { id: 'MY_PROJECT_ID', enforce: true })
+  // Process queued calls for config
   queue.forEach((args) => {
     const [command, params] = args;
     if (command === 'init') {
@@ -19,7 +17,6 @@
   const urlParams = new URLSearchParams(window.location.search);
   const patternIdFromQuery = urlParams.get('pattern');
 
-  // Proceed only if pattern ID exists
   if (!patternIdFromQuery) {
     console.warn("Patterns: 'pattern' parameter is missing from the query string.");
     return;
@@ -28,14 +25,13 @@
   // Define the API endpoint
   const apiEndpoint = `https://api.patterns.company/v1/pattern/${config.id}/${patternIdFromQuery}`;
 
-  // Core function to apply the pattern data to the DOM
+  // Helper to apply pattern data to the DOM
   function applyPatternData(pattern) {
     if (!pattern || !Array.isArray(pattern.content)) {
       console.warn("Patterns: No valid pattern data to apply.");
       return;
     }
 
-    // Define a mapping of types to attribute names
     const typeToAttribute = {
       text: "textContent",
       href: "href",
@@ -43,26 +39,22 @@
       html: "innerHTML"
     };
 
-    // Clear the previously tracked elements so we don't double-track them
-    updatedElements = [];
-
-    // Iterate over the pattern content field and update the DOM
     pattern.content.forEach((item) => {
       const attribute = typeToAttribute[item.type];
-      if (item.selector && attribute && item.payload) {
+      if (item.selector && attribute && item.payload != null) {
         const elements = document.querySelectorAll(item.selector);
         elements.forEach((el) => {
-          // Apply the update
-          if (attribute === "textContent") {
-            el.textContent = item.payload;
-          } else if (attribute === "innerHTML") {
-            el.innerHTML = item.payload;
-          } else {
-            el.setAttribute(attribute, item.payload);
+          switch (attribute) {
+            case "textContent":
+              el.textContent = item.payload;
+              break;
+            case "innerHTML":
+              el.innerHTML = item.payload;
+              break;
+            default:
+              el.setAttribute(attribute, item.payload);
+              break;
           }
-
-          // Store the data needed to re-apply later if config.enforce is true
-          updatedElements.push({ element: el, attribute, value: item.payload });
         });
       }
     });
@@ -76,94 +68,59 @@
       }
       return response.json();
     })
-    .then((data) => {
-      if (!Array.isArray(data.content) || data.content.length === 0) {
-        console.warn("Patterns: No valid pattern data found.");
+    .then((pattern) => {
+      // Basic checks
+      if (!pattern?.content?.length) {
+        console.warn("Patterns: No valid pattern content found.");
+        return;
+      }
+      if (pattern.status !== "generating") {
+        console.warn("Patterns: Pattern status is not 'generating'.");
         return;
       }
 
-      // Assume the response is a single pattern object
-      const pattern = data;
-      if (pattern.status !== "generating" || !pattern.content) {
-        console.warn("Patterns: Pattern data is not ready or missing content.");
-        return;
-      }
-
-      // Store the fetched pattern globally so we can re-apply it
+      // Store the pattern for later re-application
       storedPattern = pattern;
 
-      // Apply the pattern data to the DOM
+      // Apply once on load
       applyPatternData(storedPattern);
 
       // Dispatch an event after initial render
-      const renderedEvent = new CustomEvent("patternsRendered", {
+      document.dispatchEvent(new CustomEvent("patternsRendered", {
         detail: { patternId: patternIdFromQuery }
-      });
-      document.dispatchEvent(renderedEvent);
+      }));
 
-      // Optional: Enforce mode using MutationObserver
-      if (config.enforce === true) {
-        console.info("Patterns: Enforce mode is ON. Monitoring DOM changes for updated elements.");
+      // If enforce is true, watch for ANY DOM change and re-apply
+      if (config.enforce) {
+        console.info("Patterns: Enforce mode ON. Reapplying on any DOM change.");
 
-        let isProgrammaticChange = false;
-        observer = new MutationObserver((mutations) => {
-          // Prevent infinite loop if we are re-applying the same values
-          if (isProgrammaticChange) {
-            isProgrammaticChange = false;
-            return;
-          }
+        observer = new MutationObserver(() => {
+          // If we are the ones causing the change, skip
+          if (enforceLock) return;
 
-          mutations.forEach((mutation) => {
-            // If it's a characterData change, the target is a text node
-            if (mutation.type === "characterData") {
-              const parentEl = mutation.target.parentElement;
-              if (!parentEl) return;
+          // Temporarily disconnect so we don't observe our own changes
+          enforceLock = true;
+          observer.disconnect();
 
-              // Check if this parentEl is one of our updated elements
-              const found = updatedElements.find(
-                (u) => u.element === parentEl && u.attribute === "textContent"
-              );
-              if (found) {
-                // If the text changed from our enforced value, revert it
-                if (parentEl.textContent !== found.value) {
-                  isProgrammaticChange = true;
-                  parentEl.textContent = found.value;
-                  console.warn(
-                    `Patterns (enforce): Reverted textContent for ${parentEl.tagName}.`
-                  );
-                }
-              }
-            }
-            // If it's an attribute change
-            else if (mutation.type === "attributes") {
-              const targetEl = mutation.target;
-              const attrName = mutation.attributeName;
+          // Re-apply the pattern data
+          applyPatternData(storedPattern);
 
-              const found = updatedElements.find((u) => u.element === targetEl);
-              if (found) {
-                // For textContent, there's no attribute, so skip
-                if (found.attribute === attrName) {
-                  // If the current attribute value differs from the enforced one, revert
-                  const currentVal = targetEl.getAttribute(attrName);
-                  if (currentVal !== found.value) {
-                    isProgrammaticChange = true;
-                    targetEl.setAttribute(attrName, found.value);
-                    console.warn(
-                      `Patterns (enforce): Reverted ${attrName} for ${targetEl.tagName}.`
-                    );
-                  }
-                }
-              }
-            }
+          // Reconnect the observer
+          observer.observe(document.body, {
+            childList: true,
+            attributes: true,
+            characterData: true,
+            subtree: true
           });
+          enforceLock = false;
         });
 
-        // Observe the entire document body for attribute/characterData changes
+        // Start observing
         observer.observe(document.body, {
-          subtree: true,
           childList: true,
           attributes: true,
-          characterData: true
+          characterData: true,
+          subtree: true
         });
       }
     })
@@ -172,8 +129,7 @@
     });
 
   /**
-   * Public method to re-apply the stored pattern data to the DOM.
-   * Call `window.ptrns.updatePatternDOM()` whenever you want to “force” a re-render.
+   * Public method to manually re-apply the stored pattern data at any time.
    */
   window.ptrns = window.ptrns || {};
   window.ptrns.updatePatternDOM = function () {
@@ -181,7 +137,24 @@
       console.warn("Patterns: No stored pattern data to re-apply.");
       return;
     }
-    console.info("Patterns: Re-applying stored pattern data to the DOM.");
+    console.info("Patterns: Manually re-applying stored pattern data.");
+    // Temporarily disconnect the observer to avoid infinite loop
+    if (observer) {
+      enforceLock = true;
+      observer.disconnect();
+    }
+
     applyPatternData(storedPattern);
+
+    // Reconnect if needed
+    if (observer) {
+      observer.observe(document.body, {
+        childList: true,
+        attributes: true,
+        characterData: true,
+        subtree: true
+      });
+      enforceLock = false;
+    }
   };
 })();
