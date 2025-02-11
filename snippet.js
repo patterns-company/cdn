@@ -2,7 +2,7 @@
   const queue = window.ptrns?.q || [];
   const config = {};
 
-  // Process queued calls
+  // Process queued calls, e.g. config.enforce = true
   queue.forEach((args) => {
     const [command, params] = args;
     if (command === 'init') {
@@ -52,12 +52,16 @@
         html: "innerHTML"
       };
 
+      // Keep track of which elements were updated (for the enforce option)
+      const updatedElements = [];
+
       // Iterate over the content field and update the DOM
       pattern.content.forEach((item) => {
         const attribute = typeToAttribute[item.type];
         if (item.selector && attribute && item.payload) {
           const elements = document.querySelectorAll(item.selector);
           elements.forEach((el) => {
+            // Apply the update
             if (attribute === "textContent") {
               el.textContent = item.payload;
             } else if (attribute === "innerHTML") {
@@ -65,15 +69,81 @@
             } else {
               el.setAttribute(attribute, item.payload);
             }
+
+            // Store the data needed to re-apply later if config.enforce is true
+            updatedElements.push({ element: el, attribute, value: item.payload });
           });
         }
       });
 
       // Dispatch a custom event after updates are complete
-      const event = new CustomEvent("patternsRendered", { 
+      const renderedEvent = new CustomEvent("patternsRendered", {
         detail: { patternId: patternIdFromQuery }
       });
-      document.dispatchEvent(event);
+      document.dispatchEvent(renderedEvent);
+
+      // --- OPTIONAL: Enforce pattern changes if config.enforce is true ---
+      if (config.enforce === true) {
+        console.info("Patterns: Enforce mode is ON. Monitoring DOM changes for updated elements.");
+
+        let isProgrammaticChange = false;
+        const observer = new MutationObserver((mutations) => {
+          // Avoid re-triggering if the script itself is making the change
+          if (isProgrammaticChange) {
+            isProgrammaticChange = false;
+            return;
+          }
+
+          mutations.forEach((mutation) => {
+            // If it's a characterData change, the target is a text node
+            if (mutation.type === "characterData") {
+              const parentEl = mutation.target.parentElement;
+              if (!parentEl) return;
+
+              // Check if this parentEl is one of our updated elements
+              const found = updatedElements.find(u => u.element === parentEl && u.attribute === "textContent");
+              if (found) {
+                // If the text changed from our enforced value, revert it
+                if (parentEl.textContent !== found.value) {
+                  isProgrammaticChange = true;
+                  parentEl.textContent = found.value;
+                  console.warn(`Patterns (enforce): Reverted textContent for selector: ${parentEl.tagName}.`);
+                }
+              }
+            }
+
+            // If it's an attribute change
+            else if (mutation.type === "attributes") {
+              const targetEl = mutation.target;
+              const attrName = mutation.attributeName;
+
+              // Check if this element is one we updated, and if the changed attribute matches
+              const found = updatedElements.find(u => u.element === targetEl);
+              if (found && (found.attribute === attrName || found.attribute === "textContent")) {
+                // For textContent, there's no "textContent" attribute, so we skip that
+                if (found.attribute === attrName) {
+                  // If the current attribute value differs from the enforced one, revert it
+                  const currentVal = targetEl.getAttribute(attrName);
+                  if (currentVal !== found.value) {
+                    isProgrammaticChange = true;
+                    targetEl.setAttribute(attrName, found.value);
+                    console.warn(`Patterns (enforce): Reverted ${attrName} for selector: ${targetEl.tagName}.`);
+                  }
+                }
+              }
+            }
+          });
+        });
+
+        // Observe the entire document body for attribute or characterData changes
+        observer.observe(document.body, {
+          subtree: true,
+          childList: true,      // needed to observe text node additions/removals
+          attributes: true,
+          characterData: true
+        });
+      }
+      // --- END OPTIONAL ENFORCE SECTION ---
 
     })
     .catch((error) => {
