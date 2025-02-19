@@ -39,6 +39,15 @@
       html: "innerHTML"
     };
 
+    function checkImageExists(url) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onerror = () => resolve(false);
+        img.onload = () => resolve(true);
+        img.src = url;
+      });
+    }
+
     pattern.content.forEach((item) => {
       const attribute = typeToAttribute[item.type];
       if (item.selector && attribute && item.payload != null) {
@@ -50,6 +59,15 @@
               break;
             case "innerHTML":
               el.innerHTML = item.payload;
+              break;
+            case "src":
+              checkImageExists(item.payload).then((exists) => {
+                if (exists) {
+                  el.setAttribute(attribute, item.payload);
+                } else {
+                  console.warn(`Patterns: Resource not found at ${item.payload}`);
+                }
+              });
               break;
             default:
               el.setAttribute(attribute, item.payload);
