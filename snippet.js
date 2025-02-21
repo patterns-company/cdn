@@ -61,13 +61,17 @@
               el.innerHTML = item.payload;
               break;
             case "src":
-              checkImageExists(item.payload).then((exists) => {
-                if (exists) {
-                  el.setAttribute(attribute, item.payload);
-                } else {
-                  console.warn(`Patterns: Resource not found at ${item.payload}`);
-                }
-              });
+              if (el.tagName.toLowerCase() === "img") {
+                checkImageExists(item.payload).then((exists) => {
+                  if (exists) {
+                    el.setAttribute(attribute, item.payload);
+                  } else {
+                    console.warn(`Patterns: Resource not found at ${item.payload}`);
+                  }
+                });
+              } else {
+                el.setAttribute(attribute, item.payload);
+              }
               break;
             default:
               el.setAttribute(attribute, item.payload);
