@@ -1,11 +1,10 @@
 (function () {
   const queue = window.ptrns?.q || [];
   const config = {};
-  let storedPattern = null;   // Will hold the fetched pattern data
-  let observer = null;        // Will hold the MutationObserver if enforce is on
-  let enforceLock = false;    // Prevent re-observing our own changes
+  let storedPattern = null;
+  let observer = null;
+  let enforceLock = false;
 
-  // Process queued calls for config
   queue.forEach((args) => {
     const [command, params] = args;
     if (command === 'init') {
@@ -13,7 +12,6 @@
     }
   });
 
-  // Get the pattern ID from the query string
   const urlParams = new URLSearchParams(window.location.search);
   const patternIdFromQuery = urlParams.get('pattern');
 
@@ -22,10 +20,43 @@
     return;
   }
 
-  // Define the API endpoint
   const apiEndpoint = `https://api.patterns.company/v1/pattern/${config.id}/${patternIdFromQuery}`;
 
-  // Helper to apply pattern data to the DOM
+  function waitForCurrentIframeLoad(iframe, timeout = 10000) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (status) => {
+        if (!settled) {
+          console.info(`🧭 Original iframe ${status}: ${iframe.src}`);
+          settled = true;
+          resolve();
+        }
+      };
+      iframe.onload = () => finish("loaded");
+      iframe.onerror = () => finish("errored");
+      setTimeout(() => finish("timed out"), timeout);
+    });
+  }
+
+  function safelyUpdateIframeSrc(iframe, newSrc, timeout = 10000) {
+    return new Promise((resolve) => {
+      const currentSrc = iframe.getAttribute("src");
+      if (!currentSrc || currentSrc === "about:blank") {
+        console.info("📦 No current src. Setting iframe directly.");
+        iframe.onload = () => resolve("loaded directly");
+        iframe.onerror = () => resolve("error directly");
+        iframe.setAttribute("src", newSrc);
+        return;
+      }
+      waitForCurrentIframeLoad(iframe, timeout).then(() => {
+        console.info(`🔁 Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
+        iframe.onload = () => resolve("loaded updated");
+        iframe.onerror = () => resolve("error updated");
+        iframe.setAttribute("src", newSrc);
+      });
+    });
+  }
+
   function applyPatternData(pattern) {
     if (!pattern || !Array.isArray(pattern.content)) {
       console.warn("Patterns: No valid pattern data to apply.");
@@ -48,46 +79,7 @@
       });
     }
 
-    function waitForCurrentIframeLoad(iframe, timeout = 10000) {
-      return new Promise((resolve) => {
-        let settled = false;
-    
-        const finish = (status) => {
-          if (!settled) {
-            console.info(`🧭 Original iframe ${status}: ${iframe.src}`);
-            settled = true;
-            resolve();
-          }
-        };
-    
-        iframe.onload = () => finish("loaded");
-        iframe.onerror = () => finish("errored");
-    
-        setTimeout(() => finish("timed out"), timeout);
-      });
-    }
-    
-    function safelyUpdateIframeSrc(iframe, newSrc, timeout = 10000) {
-      return new Promise((resolve) => {
-        const currentSrc = iframe.getAttribute("src");
-    
-        if (!currentSrc || currentSrc === "about:blank") {
-          console.info("📦 No current src. Setting iframe directly.");
-          iframe.onload = () => resolve("loaded directly");
-          iframe.onerror = () => resolve("error directly");
-          iframe.setAttribute("src", newSrc);
-          return;
-        }
-    
-        // Wait for the original iframe to finish loading
-        waitForCurrentIframeLoad(iframe, timeout).then(() => {
-          console.info(`🔁 Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
-          iframe.onload = () => resolve("loaded updated");
-          iframe.onerror = () => resolve("error updated");
-          iframe.setAttribute("src", newSrc);
-        });
-      });
-    }
+    const iframeLoadPromises = [];
 
     pattern.content.forEach((item) => {
       const attribute = typeToAttribute[item.type];
@@ -124,9 +116,15 @@
         });
       }
     });
+
+    Promise.all(iframeLoadPromises).then(() => {
+      console.info("Patterns: All iframes loaded. Dispatching 'patternsRendered'");
+      document.dispatchEvent(new CustomEvent("patternsRendered", {
+        detail: { patternId: patternIdFromQuery }
+      }));
+    });
   }
 
-  // Fetch pattern data
   fetch(apiEndpoint)
     .then((response) => {
       if (!response.ok) {
@@ -135,7 +133,6 @@
       return response.json();
     })
     .then((pattern) => {
-      // Basic checks
       if (!pattern?.content?.length) {
         console.warn("Patterns: No valid pattern content found.");
         return;
@@ -145,33 +142,19 @@
         return;
       }
 
-      // Store the pattern for later re-application
       storedPattern = pattern;
-
-      // Apply once on load
       applyPatternData(storedPattern);
 
-      // Dispatch an event after initial render
-      document.dispatchEvent(new CustomEvent("patternsRendered", {
-        detail: { patternId: patternIdFromQuery }
-      }));
-
-      // If enforce is true, watch for ANY DOM change and re-apply
       if (config.enforce) {
         console.info("Patterns: Enforce mode ON. Reapplying on any DOM change.");
 
         observer = new MutationObserver(() => {
-          // If we are the ones causing the change, skip
           if (enforceLock) return;
-
-          // Temporarily disconnect so we don't observe our own changes
           enforceLock = true;
           observer.disconnect();
 
-          // Re-apply the pattern data
           applyPatternData(storedPattern);
 
-          // Reconnect the observer
           observer.observe(document.body, {
             childList: true,
             attributes: true,
@@ -181,7 +164,6 @@
           enforceLock = false;
         });
 
-        // Start observing
         observer.observe(document.body, {
           childList: true,
           attributes: true,
@@ -194,9 +176,6 @@
       console.error("Patterns: Error fetching or processing pattern data:", error);
     });
 
-  /**
-   * Public method to manually re-apply the stored pattern data at any time.
-   */
   window.ptrns = window.ptrns || {};
   window.ptrns.updatePatternDOM = function () {
     if (!storedPattern) {
@@ -204,7 +183,6 @@
       return;
     }
     console.info("Patterns: Manually re-applying stored pattern data.");
-    // Temporarily disconnect the observer to avoid infinite loop
     if (observer) {
       enforceLock = true;
       observer.disconnect();
@@ -212,7 +190,6 @@
 
     applyPatternData(storedPattern);
 
-    // Reconnect if needed
     if (observer) {
       observer.observe(document.body, {
         childList: true,
