@@ -48,28 +48,46 @@
       });
     }
 
-    function waitForIframeToBeReady(iframe, newSrc, timeout = 10000) {
+    function waitForCurrentIframeLoad(iframe, timeout = 10000) {
       return new Promise((resolve) => {
         let settled = false;
     
-        const done = (status) => {
+        const finish = (status) => {
           if (!settled) {
-            console[status === "ok" ? "info" : "warn"](`Iframe ${status}: ${newSrc}`);
+            console.info(`🧭 Original iframe ${status}: ${iframe.src}`);
             settled = true;
             resolve();
           }
         };
     
-        iframe.onload = () => done("ok");
-        iframe.onerror = () => done("error");
+        iframe.onload = () => finish("loaded");
+        iframe.onerror = () => finish("errored");
     
-        setTimeout(() => done("timeout"), timeout);
-    
-        // Only set src after handlers are in place
-        iframe.setAttribute("src", newSrc);
+        setTimeout(() => finish("timed out"), timeout);
       });
     }
     
+    function safelyUpdateIframeSrc(iframe, newSrc, timeout = 10000) {
+      return new Promise((resolve) => {
+        const currentSrc = iframe.getAttribute("src");
+    
+        if (!currentSrc || currentSrc === "about:blank") {
+          console.info("📦 No current src. Setting iframe directly.");
+          iframe.onload = () => resolve("loaded directly");
+          iframe.onerror = () => resolve("error directly");
+          iframe.setAttribute("src", newSrc);
+          return;
+        }
+    
+        // Wait for the original iframe to finish loading
+        waitForCurrentIframeLoad(iframe, timeout).then(() => {
+          console.info(`🔁 Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
+          iframe.onload = () => resolve("loaded updated");
+          iframe.onerror = () => resolve("error updated");
+          iframe.setAttribute("src", newSrc);
+        });
+      });
+    }
 
     pattern.content.forEach((item) => {
       const attribute = typeToAttribute[item.type];
@@ -93,10 +111,8 @@
                   }
                 });
               } else if (el.tagName.toLowerCase() === "iframe") {
-                const currentSrc = el.getAttribute("src");
-                if (currentSrc !== item.payload) {
-                  waitForIframeToBeReady(el, item.payload);
-                }
+                const newSrc = item.payload;
+                iframeLoadPromises.push(safelyUpdateIframeSrc(el, newSrc));
               } else {
                 el.setAttribute(attribute, item.payload);
               }
