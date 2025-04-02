@@ -5,8 +5,14 @@
   let observer = null;
   let enforceLock = false;
 
-  queue.forEach((args) => {
-    const [command, params] = args;
+  const observeConfig = {
+    childList: true,
+    attributes: true,
+    characterData: true,
+    subtree: true
+  };
+
+  queue.forEach(([command, params]) => {
     if (command === 'init') {
       Object.assign(config, params);
     }
@@ -41,13 +47,13 @@
   function safelyUpdateIframeSrc(iframe, newSrc, timeout = 10000) {
     return new Promise((resolve) => {
       const currentSrc = iframe.getAttribute("src");
-  
+
       if (currentSrc === newSrc) {
         console.info(`⏭ Iframe src is already up to date: ${newSrc}`);
         resolve("skipped");
         return;
       }
-  
+
       if (!currentSrc || currentSrc === "about:blank") {
         console.info("📦 No current src. Setting iframe directly.");
         iframe.onload = () => resolve("loaded directly");
@@ -55,7 +61,7 @@
         iframe.setAttribute("src", newSrc);
         return;
       }
-  
+
       waitForCurrentIframeLoad(iframe, timeout).then(() => {
         console.info(`🔁 Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
         iframe.onload = () => resolve("loaded updated");
@@ -64,7 +70,6 @@
       });
     });
   }
-  
 
   function applyPatternData(pattern) {
     if (!pattern || !Array.isArray(pattern.content)) {
@@ -99,25 +104,32 @@
             case "textContent":
               el.textContent = item.payload;
               break;
+
             case "innerHTML":
               el.innerHTML = item.payload;
               break;
+
             case "src":
               if (el.tagName.toLowerCase() === "img") {
-                checkImageExists(item.payload).then((exists) => {
-                  if (exists) {
-                    el.setAttribute(attribute, item.payload);
-                  } else {
-                    console.warn(`Patterns: Resource not found at ${item.payload}`);
-                  }
-                });
+                const currentSrc = el.getAttribute("src");
+                if (currentSrc !== item.payload) {
+                  checkImageExists(item.payload).then((exists) => {
+                    if (exists) {
+                      el.setAttribute("src", item.payload);
+                    } else {
+                      console.warn(`Patterns: Resource not found at ${item.payload}`);
+                    }
+                  });
+                } else {
+                  console.info(`⏭ Image src already set: ${item.payload}`);
+                }
               } else if (el.tagName.toLowerCase() === "iframe") {
-                const newSrc = item.payload;
-                iframeLoadPromises.push(safelyUpdateIframeSrc(el, newSrc));
+                iframeLoadPromises.push(safelyUpdateIframeSrc(el, item.payload));
               } else {
-                el.setAttribute(attribute, item.payload);
+                el.setAttribute("src", item.payload);
               }
               break;
+
             default:
               el.setAttribute(attribute, item.payload);
               break;
@@ -136,9 +148,7 @@
 
   fetch(apiEndpoint)
     .then((response) => {
-      if (!response.ok) {
-        throw new Error(`API request failed with status ${response.status}`);
-      }
+      if (!response.ok) throw new Error(`API request failed with status ${response.status}`);
       return response.json();
     })
     .then((pattern) => {
@@ -146,6 +156,7 @@
         console.warn("Patterns: No valid pattern content found.");
         return;
       }
+
       if (pattern.status !== "generating") {
         console.warn("Patterns: Pattern status is not 'generating'.");
         return;
@@ -157,28 +168,22 @@
       if (config.enforce) {
         console.info("Patterns: Enforce mode ON. Reapplying on any DOM change.");
 
+        let debounceTimer;
         observer = new MutationObserver(() => {
           if (enforceLock) return;
-          enforceLock = true;
-          observer.disconnect();
+          clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            enforceLock = true;
+            observer.disconnect();
 
-          applyPatternData(storedPattern);
-
-          observer.observe(document.body, {
-            childList: true,
-            attributes: true,
-            characterData: true,
-            subtree: true
-          });
-          enforceLock = false;
+            applyPatternData(storedPattern).finally(() => {
+              observer.observe(document.body, observeConfig);
+              enforceLock = false;
+            });
+          }, 200);
         });
 
-        observer.observe(document.body, {
-          childList: true,
-          attributes: true,
-          characterData: true,
-          subtree: true
-        });
+        observer.observe(document.body, observeConfig);
       }
     })
     .catch((error) => {
@@ -191,6 +196,7 @@
       console.warn("Patterns: No stored pattern data to re-apply.");
       return;
     }
+
     console.info("Patterns: Manually re-applying stored pattern data.");
     if (observer) {
       enforceLock = true;
@@ -200,12 +206,7 @@
     applyPatternData(storedPattern);
 
     if (observer) {
-      observer.observe(document.body, {
-        childList: true,
-        attributes: true,
-        characterData: true,
-        subtree: true
-      });
+      observer.observe(document.body, observeConfig);
       enforceLock = false;
     }
   };
