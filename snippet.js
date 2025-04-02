@@ -69,6 +69,10 @@
                     console.warn(`Patterns: Resource not found at ${item.payload}`);
                   }
                 });
+              } else if (el.tagName.toLowerCase() === "iframe") {
+                if (el.getAttribute(attribute) !== item.payload) {
+                  el.setAttribute(attribute, item.payload);
+                }
               } else {
                 el.setAttribute(attribute, item.payload);
               }
