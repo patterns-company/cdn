@@ -49,6 +49,12 @@
         return;
       }
       waitForCurrentIframeLoad(iframe, timeout).then(() => {
+        if (currentSrc === newSrc) {
+          console.info(`⏭ Iframe src is already up to date: ${newSrc}`);
+          resolve("skipped");
+          return;
+        }
+      
         console.info(`🔁 Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
         iframe.onload = () => resolve("loaded updated");
         iframe.onerror = () => resolve("error updated");
