@@ -176,10 +176,9 @@
             enforceLock = true;
             observer.disconnect();
 
-            applyPatternData(storedPattern).finally(() => {
-              observer.observe(document.body, observeConfig);
-              enforceLock = false;
-            });
+            applyPatternData(storedPattern);
+            observer.observe(document.body, observeConfig);
+            enforceLock = false;
           }, 200);
         });
 
