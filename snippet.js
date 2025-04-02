@@ -48,6 +48,29 @@
       });
     }
 
+    function waitForIframeToBeReady(iframe, newSrc, timeout = 10000) {
+      return new Promise((resolve) => {
+        let settled = false;
+    
+        const done = (status) => {
+          if (!settled) {
+            console[status === "ok" ? "info" : "warn"](`Iframe ${status}: ${newSrc}`);
+            settled = true;
+            resolve();
+          }
+        };
+    
+        iframe.onload = () => done("ok");
+        iframe.onerror = () => done("error");
+    
+        setTimeout(() => done("timeout"), timeout);
+    
+        // Only set src after handlers are in place
+        iframe.setAttribute("src", newSrc);
+      });
+    }
+    
+
     pattern.content.forEach((item) => {
       const attribute = typeToAttribute[item.type];
       if (item.selector && attribute && item.payload != null) {
@@ -70,8 +93,9 @@
                   }
                 });
               } else if (el.tagName.toLowerCase() === "iframe") {
-                if (el.getAttribute(attribute) !== item.payload) {
-                  el.setAttribute(attribute, item.payload);
+                const currentSrc = el.getAttribute("src");
+                if (currentSrc !== item.payload) {
+                  waitForIframeToBeReady(el, item.payload);
                 }
               } else {
                 el.setAttribute(attribute, item.payload);
