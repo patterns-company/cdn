@@ -41,6 +41,13 @@
   function safelyUpdateIframeSrc(iframe, newSrc, timeout = 10000) {
     return new Promise((resolve) => {
       const currentSrc = iframe.getAttribute("src");
+  
+      if (currentSrc === newSrc) {
+        console.info(`⏭ Iframe src is already up to date: ${newSrc}`);
+        resolve("skipped");
+        return;
+      }
+  
       if (!currentSrc || currentSrc === "about:blank") {
         console.info("📦 No current src. Setting iframe directly.");
         iframe.onload = () => resolve("loaded directly");
@@ -48,13 +55,8 @@
         iframe.setAttribute("src", newSrc);
         return;
       }
+  
       waitForCurrentIframeLoad(iframe, timeout).then(() => {
-        if (currentSrc === newSrc) {
-          console.info(`⏭ Iframe src is already up to date: ${newSrc}`);
-          resolve("skipped");
-          return;
-        }
-      
         console.info(`🔁 Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
         iframe.onload = () => resolve("loaded updated");
         iframe.onerror = () => resolve("error updated");
@@ -62,6 +64,7 @@
       });
     });
   }
+  
 
   function applyPatternData(pattern) {
     if (!pattern || !Array.isArray(pattern.content)) {
