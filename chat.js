@@ -69,7 +69,7 @@
         }
 
         .patterns-widget .brand-header img {
-            width: 32px;
+
             height: 32px;
         }
 
