@@ -115,6 +115,7 @@
                 if (currentSrc !== item.payload) {
                   checkImageExists(item.payload).then((exists) => {
                     if (exists) {
+                      el.removeAttribute("srcset"); // Remove srcset before setting src
                       el.setAttribute("src", item.payload);
                     } else {
                       console.warn(`Patterns: Resource not found at ${item.payload}`);
