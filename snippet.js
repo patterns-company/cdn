@@ -158,10 +158,10 @@
         return;
       }
 
-      if (pattern.status !== "generating") {
-        console.warn("Patterns: Pattern status is not 'generating'.");
-        return;
-      }
+      // if (pattern.status !== "generating") {
+      //   console.warn("Patterns: Pattern status is not 'generating'.");
+      //   return;
+      // }
 
       storedPattern = pattern;
       applyPatternData(storedPattern);
