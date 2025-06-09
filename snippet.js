@@ -9,6 +9,16 @@
   let currentSessionId = null;
   let debug = false; // Initialize debug flag
 
+  // Stores { startTime: ISOString, accumulatedActiveDuration: number } for each section's analyticsId
+  const sectionTimers = new Map();
+  let lastViewedSectionId = null;
+
+  let isPageActive = true; // Assume active on load
+
+  // --- NEW: Minimum duration threshold ---
+  const MIN_DURATION_THRESHOLD_MS = 1000; // 1 second in milliseconds
+  // --- END NEW ---
+
   const observeConfig = {
     childList: true,
     attributes: true,
@@ -30,22 +40,17 @@
     debug = true;
   }
 
-  // Define your API base URL - now from config or default
   const apiBaseUrl = config.apiBaseUrl;
 
   const log = (level, ...args) => {
-    // Define emojis for each log level
     const emojis = {
-      info: '✨',    // For informational messages
-      warn: '⚠️',    // For warnings
-      error: '🔥'   // For errors
+      info: '✨',
+      warn: '⚠️',
+      error: '🔥'
     };
-
-    // Get the appropriate emoji, default to an empty string if not found
     const emoji = emojis[level] || '';
-
-    if (debug || level === 'error') { // Always show errors, otherwise check debug flag
-      console[level](`${emoji} Patterns:`, ...args); // Prepend emoji and "Patterns:"
+    if (debug || level === 'error') {
+      console[level](`${emoji} Patterns:`, ...args);
     }
   };
 
@@ -54,13 +59,11 @@
     return;
   }
 
-  // IMPORTANT: Ensure config.id (your snippet ID) is present from the init call
   if (!config.id) {
     log("error", "Initialization ID (config.id) is missing. Cannot fetch pattern data.");
     return;
   }
 
-  // This route now correctly uses :snippetId (config.id) and :patternId in the URL order
   const patternApiEndpoint = `${apiBaseUrl}/pattern/${config.id}/${patternIdFromQuery}`;
   const sessionCreateEndpoint = `${apiBaseUrl}/sessions`;
   const sessionEventsEndpoint = (sessionId) => `${apiBaseUrl}/sessions/${sessionId}/events`;
@@ -200,15 +203,14 @@
 
     const analyticsPayload = { events: events };
 
-    // Using fetch with keepalive and credentials: 'omit'
     fetch(sessionEventsEndpoint(currentSessionId), {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
         body: JSON.stringify(analyticsPayload),
-        credentials: 'omit', // Crucial: Do NOT send cookies or other credentials
-        keepalive: true      // Ensures the request can complete even if the page unloads
+        credentials: 'omit',
+        keepalive: true
     })
     .then(response => {
         if (!response.ok) {
@@ -222,25 +224,71 @@
     });
   }
 
+  // Helper to calculate duration for a section and send it
+  const endSectionDuration = (analyticsId, timestampISO) => {
+    const timerData = sectionTimers.get(analyticsId);
+    if (!timerData) return; // Already ended or not tracking
+
+    const { startTime, accumulatedActiveDuration } = timerData;
+    let finalDuration = accumulatedActiveDuration;
+
+    if (startTime !== null) { // If timer was active (not paused)
+      finalDuration += (Date.now() - new Date(startTime).getTime());
+    }
+
+    // --- MODIFIED: Add duration threshold check ---
+    if (finalDuration >= MIN_DURATION_THRESHOLD_MS) {
+        sendAnalyticsEvents([{
+            id: analyticsId,
+            eventType: 'duration',
+            timestamp: timestampISO,
+            duration: finalDuration
+        }]);
+        log("info", `[Analytics] '${analyticsId}' duration: ${finalDuration}ms.`);
+    } else {
+        log("info", `[Analytics] Skipping '${analyticsId}' duration (${finalDuration}ms) as it's below threshold.`);
+    }
+    // --- END MODIFIED ---
+    sectionTimers.delete(analyticsId); // Clear timer regardless of whether it was sent
+  };
+
+
   const setupViewTracking = (element, analyticsId) => {
-    let hasBeenViewed = false;
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
-        if (entry.isIntersecting && !hasBeenViewed) {
-          hasBeenViewed = true;
-          sendAnalyticsEvents([{
-            id: analyticsId,
-            eventType: 'view',
-            timestamp: new Date().toISOString()
-          }]);
-          log("info", `[Analytics] '${analyticsId}' viewed.`);
-          observer.disconnect();
+        const now = Date.now();
+        const currentTimeISO = new Date(now).toISOString();
+
+        if (entry.isIntersecting) {
+          if (lastViewedSectionId && lastViewedSectionId !== analyticsId) {
+            endSectionDuration(lastViewedSectionId, currentTimeISO);
+          }
+
+          if (!sectionTimers.has(analyticsId) && isPageActive) {
+            sectionTimers.set(analyticsId, {
+              startTime: currentTimeISO,
+              accumulatedActiveDuration: 0
+            });
+            log("info", `[Analytics] '${analyticsId}' view started.`);
+            sendAnalyticsEvents([{
+              id: analyticsId,
+              eventType: 'view',
+              timestamp: currentTimeISO
+            }]);
+          }
+          lastViewedSectionId = analyticsId;
+        } else {
+          endSectionDuration(analyticsId, currentTimeISO);
+          if (lastViewedSectionId === analyticsId) {
+              lastViewedSectionId = null;
+          }
         }
       });
-    }, { threshold: 0.5 });
+    }, { threshold: [0, 0.5, 1.0] });
     observer.observe(element);
     return observer;
   };
+
 
   const setupClickTracking = (element, analyticsId) => {
     const handler = () => {
@@ -254,6 +302,73 @@
     element.addEventListener('click', handler);
     return handler;
   };
+
+  document.addEventListener('visibilitychange', () => {
+    const now = Date.now();
+    const currentTimeISO = new Date(now).toISOString();
+
+    if (document.hidden) {
+      log("info", "[Analytics] Page is hidden. Pausing duration tracking for all active sections.");
+      isPageActive = false;
+
+      sectionTimers.forEach((timerData, analyticsId) => {
+        const { startTime, accumulatedActiveDuration } = timerData;
+        if (startTime !== null) { // Only calculate for currently active timers
+          const currentActiveSegment = now - new Date(startTime).getTime();
+          sectionTimers.set(analyticsId, {
+            startTime: null,
+            accumulatedActiveDuration: accumulatedActiveDuration + currentActiveSegment
+          });
+        }
+      });
+    } else {
+      log("info", "[Analytics] Page is visible again. Resuming duration tracking for all active sections.");
+      isPageActive = true;
+
+      sectionTimers.forEach((timerData, analyticsId) => {
+        if (timerData.startTime === null) {
+          sectionTimers.set(analyticsId, {
+            startTime: currentTimeISO,
+            accumulatedActiveDuration: timerData.accumulatedActiveDuration
+          });
+        }
+      });
+    }
+  });
+
+
+  window.addEventListener('beforeunload', () => {
+    const eventsToSend = [];
+    const now = Date.now();
+    const currentTimeISO = new Date(now).toISOString();
+
+    sectionTimers.forEach((timerData, analyticsId) => {
+      const { startTime, accumulatedActiveDuration } = timerData;
+      let finalDuration = accumulatedActiveDuration;
+
+      if (startTime !== null) {
+        finalDuration += (now - new Date(startTime).getTime());
+      }
+
+      // --- MODIFIED: Add duration threshold check for beforeunload ---
+      if (finalDuration >= MIN_DURATION_THRESHOLD_MS) {
+        eventsToSend.push({
+            id: analyticsId,
+            eventType: 'duration',
+            timestamp: currentTimeISO,
+            duration: finalDuration
+        });
+        log("info", `[Analytics] Sending pending '${analyticsId}' duration on unload: ${finalDuration}ms.`);
+      } else {
+          log("info", `[Analytics] Skipping pending '${analyticsId}' duration (${finalDuration}ms) on unload as it's below threshold.`);
+      }
+      // --- END MODIFIED ---
+    });
+
+    if (eventsToSend.length > 0) {
+        sendAnalyticsEvents(eventsToSend);
+    }
+  });
 
   fetch(patternApiEndpoint)
     .then((response) => {
@@ -284,11 +399,11 @@
             userAgent: navigator.userAgent,
             ipAddress: 'UNKNOWN'
           }),
-          credentials: 'omit' // Crucial: Do NOT send cookies or other credentials for session creation
+          credentials: 'omit'
         });
         if (!sessionResponse.ok) throw new Error(`Failed to create session: ${sessionResponse.status}`);
         const session = await sessionResponse.json();
-        currentSessionId = session.id; // Correctly accessing 'id' from the response body
+        currentSessionId = session.id;
         log("info", `[Analytics] Session created with ID: ${currentSessionId}`);
       } catch (error) {
         log("error", "[Analytics] Error creating session:", error);
