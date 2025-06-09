@@ -1,23 +1,23 @@
 (function () {
   const queue = window.ptrns?.q || [];
   const config = {
-    apiBaseUrl: 'https://api.patterns.company/v1' // Default production API URL
+    apiBaseUrl: 'https://api.patterns.company/v1'
   };
   let storedPattern = null;
   let observer = null;
   let enforceLock = false;
   let currentSessionId = null;
-  let debug = false; // Initialize debug flag
+  let debug = false;
 
-  // Stores { startTime: ISOString, accumulatedActiveDuration: number } for each section's analyticsId
   const sectionTimers = new Map();
   let lastViewedSectionId = null;
 
-  let isPageActive = true; // Assume active on load
+  let isPageActive = true;
+  const MIN_DURATION_THRESHOLD_MS = 1000;
 
-  // --- NEW: Minimum duration threshold ---
-  const MIN_DURATION_THRESHOLD_MS = 1000; // 1 second in milliseconds
-  // --- END NEW ---
+  const eventsBuffer = [];
+  const BATCH_INTERVAL_MS = 3000;
+  let batchTimerId = null;
 
   const observeConfig = {
     childList: true,
@@ -68,6 +68,38 @@
   const sessionCreateEndpoint = `${apiBaseUrl}/sessions`;
   const sessionEventsEndpoint = (sessionId) => `${apiBaseUrl}/sessions/${sessionId}/events`;
 
+  function processEventsBuffer() {
+    if (eventsBuffer.length === 0) {
+      return;
+    }
+    const eventsToSend = [...eventsBuffer];
+    eventsBuffer.length = 0;
+    if (!currentSessionId) {
+      log("warn", "[Analytics] No session ID available to send batched events. Clearing buffer.");
+      return;
+    }
+    const analyticsPayload = { events: eventsToSend };
+    fetch(sessionEventsEndpoint(currentSessionId), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(analyticsPayload),
+        credentials: 'omit',
+        keepalive: true
+    })
+    .then(response => {
+        if (!response.ok) {
+            log("warn", `[Analytics] Failed to send ${eventsToSend.length} batched events (status: ${response.status})`);
+        } else {
+            log("info", `[Analytics] ${eventsToSend.length} events sent successfully via fetch (batched).`);
+        }
+    })
+    .catch(error => {
+        log("error", "[Analytics] Error sending batched events via fetch:", error);
+    });
+  }
+
   function waitForCurrentIframeLoad(iframe, timeout = 10000) {
     return new Promise((resolve) => {
       let settled = false;
@@ -87,13 +119,11 @@
   function safelyUpdateIframeSrc(iframe, newSrc, timeout = 10000) {
     return new Promise((resolve) => {
       const currentSrc = iframe.getAttribute("src");
-
       if (currentSrc === newSrc) {
         log("info", `Iframe src is already up to date: ${newSrc}`);
         resolve("skipped");
         return;
       }
-
       if (!currentSrc || currentSrc === "about:blank") {
         log("info", "No current src. Setting iframe directly.");
         iframe.onload = () => resolve("loaded directly");
@@ -101,7 +131,6 @@
         iframe.setAttribute("src", newSrc);
         return;
       }
-
       waitForCurrentIframeLoad(iframe, timeout).then(() => {
         log("info", `Replacing iframe src from ${currentSrc} ➜ ${newSrc}`);
         iframe.onload = () => resolve("loaded updated");
@@ -116,14 +145,12 @@
       log("warn", "No valid pattern data to apply.");
       return;
     }
-
     const typeToAttribute = {
       text: "textContent",
       href: "href",
       src: "src",
       html: "innerHTML"
     };
-
     function checkImageExists(url) {
       return new Promise((resolve) => {
         const img = new Image();
@@ -132,9 +159,7 @@
         img.src = url;
       });
     }
-
     const iframeLoadPromises = [];
-
     pattern.content.forEach((item) => {
       const attribute = typeToAttribute[item.type];
       if (item.selector && attribute && item.payload != null) {
@@ -145,12 +170,10 @@
               log("info", `[Changes] Updating text on '${item.selector}'`);
               el.textContent = item.payload;
               break;
-
             case "innerHTML":
               log("info", `[Changes] Updating html on '${item.selector}'`);
               el.innerHTML = item.payload;
               break;
-
             case "src":
               if (el.tagName.toLowerCase() === "img") {
                 const currentSrc = el.getAttribute("src");
@@ -174,7 +197,6 @@
                 el.setAttribute("src", item.payload);
               }
               break;
-
             default:
               log("info", `[Changes] Updating attribute '${attribute}' on '${item.selector}'`);
               el.setAttribute(attribute, item.payload);
@@ -183,7 +205,6 @@
         });
       }
     });
-
     Promise.all(iframeLoadPromises).then(() => {
       log("info", "All iframes loaded. Dispatching 'patternsRendered'");
       document.dispatchEvent(new CustomEvent("patternsRendered", {
@@ -193,50 +214,25 @@
   }
 
   function sendAnalyticsEvents(events) {
-    if (!currentSessionId) {
-      log("warn", "[Analytics] No session ID available to send events.");
-      return;
-    }
     if (!Array.isArray(events) || events.length === 0) {
       return;
     }
-
-    const analyticsPayload = { events: events };
-
-    fetch(sessionEventsEndpoint(currentSessionId), {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(analyticsPayload),
-        credentials: 'omit',
-        keepalive: true
-    })
-    .then(response => {
-        if (!response.ok) {
-            log("warn", `[Analytics] Failed to send events (status: ${response.status})`);
-        } else {
-            log("info", "[Analytics] Events sent successfully via fetch.");
-        }
-    })
-    .catch(error => {
-        log("error", "[Analytics] Error sending events via fetch:", error);
-    });
+    eventsBuffer.push(...events);
+    log("info", `[Analytics] Added ${events.length} event(s) to buffer. Current buffer size: ${eventsBuffer.length}.`);
+    if (batchTimerId === null) {
+      batchTimerId = setInterval(processEventsBuffer, BATCH_INTERVAL_MS);
+      log("info", `[Analytics] Batching timer started (interval: ${BATCH_INTERVAL_MS}ms).`);
+    }
   }
 
-  // Helper to calculate duration for a section and send it
   const endSectionDuration = (analyticsId, timestampISO) => {
     const timerData = sectionTimers.get(analyticsId);
-    if (!timerData) return; // Already ended or not tracking
-
+    if (!timerData) return;
     const { startTime, accumulatedActiveDuration } = timerData;
     let finalDuration = accumulatedActiveDuration;
-
-    if (startTime !== null) { // If timer was active (not paused)
+    if (startTime !== null) {
       finalDuration += (Date.now() - new Date(startTime).getTime());
     }
-
-    // --- MODIFIED: Add duration threshold check ---
     if (finalDuration >= MIN_DURATION_THRESHOLD_MS) {
         sendAnalyticsEvents([{
             id: analyticsId,
@@ -244,26 +240,22 @@
             timestamp: timestampISO,
             duration: finalDuration
         }]);
-        log("info", `[Analytics] '${analyticsId}' duration: ${finalDuration}ms.`);
+        log("info", `[Analytics] '${analyticsId}' duration calculated: ${finalDuration}ms.`);
     } else {
         log("info", `[Analytics] Skipping '${analyticsId}' duration (${finalDuration}ms) as it's below threshold.`);
     }
-    // --- END MODIFIED ---
-    sectionTimers.delete(analyticsId); // Clear timer regardless of whether it was sent
+    sectionTimers.delete(analyticsId);
   };
-
 
   const setupViewTracking = (element, analyticsId) => {
     const observer = new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         const now = Date.now();
         const currentTimeISO = new Date(now).toISOString();
-
         if (entry.isIntersecting) {
           if (lastViewedSectionId && lastViewedSectionId !== analyticsId) {
             endSectionDuration(lastViewedSectionId, currentTimeISO);
           }
-
           if (!sectionTimers.has(analyticsId) && isPageActive) {
             sectionTimers.set(analyticsId, {
               startTime: currentTimeISO,
@@ -289,7 +281,6 @@
     return observer;
   };
 
-
   const setupClickTracking = (element, analyticsId) => {
     const handler = () => {
       sendAnalyticsEvents([{
@@ -306,14 +297,12 @@
   document.addEventListener('visibilitychange', () => {
     const now = Date.now();
     const currentTimeISO = new Date(now).toISOString();
-
     if (document.hidden) {
       log("info", "[Analytics] Page is hidden. Pausing duration tracking for all active sections.");
       isPageActive = false;
-
       sectionTimers.forEach((timerData, analyticsId) => {
         const { startTime, accumulatedActiveDuration } = timerData;
-        if (startTime !== null) { // Only calculate for currently active timers
+        if (startTime !== null) {
           const currentActiveSegment = now - new Date(startTime).getTime();
           sectionTimers.set(analyticsId, {
             startTime: null,
@@ -324,7 +313,6 @@
     } else {
       log("info", "[Analytics] Page is visible again. Resuming duration tracking for all active sections.");
       isPageActive = true;
-
       sectionTimers.forEach((timerData, analyticsId) => {
         if (timerData.startTime === null) {
           sectionTimers.set(analyticsId, {
@@ -336,37 +324,43 @@
     }
   });
 
-
   window.addEventListener('beforeunload', () => {
-    const eventsToSend = [];
+    if (batchTimerId !== null) {
+        clearInterval(batchTimerId);
+        batchTimerId = null;
+    }
+    const eventsToSendImmediately = [];
     const now = Date.now();
     const currentTimeISO = new Date(now).toISOString();
-
     sectionTimers.forEach((timerData, analyticsId) => {
       const { startTime, accumulatedActiveDuration } = timerData;
       let finalDuration = accumulatedActiveDuration;
-
       if (startTime !== null) {
         finalDuration += (now - new Date(startTime).getTime());
       }
-
-      // --- MODIFIED: Add duration threshold check for beforeunload ---
       if (finalDuration >= MIN_DURATION_THRESHOLD_MS) {
-        eventsToSend.push({
+        eventsToSendImmediately.push({
             id: analyticsId,
             eventType: 'duration',
             timestamp: currentTimeISO,
             duration: finalDuration
         });
-        log("info", `[Analytics] Sending pending '${analyticsId}' duration on unload: ${finalDuration}ms.`);
+        log("info", `[Analytics] Finalizing '${analyticsId}' duration for unload: ${finalDuration}ms.`);
       } else {
-          log("info", `[Analytics] Skipping pending '${analyticsId}' duration (${finalDuration}ms) on unload as it's below threshold.`);
+          log("info", `[Analytics] Skipping final '${analyticsId}' duration (${finalDuration}ms) on unload as it's below threshold.`);
       }
-      // --- END MODIFIED ---
     });
-
-    if (eventsToSend.length > 0) {
-        sendAnalyticsEvents(eventsToSend);
+    if (eventsBuffer.length > 0) {
+        eventsToSendImmediately.push(...eventsBuffer);
+        eventsBuffer.length = 0;
+    }
+    if (eventsToSendImmediately.length > 0) {
+        log("info", `[Analytics] Sending ${eventsToSendImmediately.length} events immediately on beforeunload.`);
+        if (currentSessionId) {
+            navigator.sendBeacon(sessionEventsEndpoint(currentSessionId), JSON.stringify({ events: eventsToSendImmediately }));
+        } else {
+            log("warn", "[Analytics] Cannot send unload events: No session ID available.");
+        }
     }
   });
 
@@ -384,10 +378,8 @@
         log("warn", "Pattern status is not 'completed'.");
         return;
       }
-
       storedPattern = patternData;
       log("info", "Pattern data fetched successfully.");
-
       try {
         const sessionResponse = await fetch(sessionCreateEndpoint, {
           method: 'POST',
@@ -408,9 +400,7 @@
       } catch (error) {
         log("error", "[Analytics] Error creating session:", error);
       }
-
       applyPatternData(storedPattern);
-
       if (currentSessionId && Array.isArray(storedPattern.analytics)) {
         storedPattern.analytics.forEach(analyticsItem => {
           const elements = document.querySelectorAll(analyticsItem.selector);
@@ -432,10 +422,8 @@
       } else {
         log("info", "[Analytics] No analytics configuration found for this pattern.");
       }
-
       if (config.enforce) {
         log("info", "Enforce mode ON. Reapplying on any DOM change.");
-
         let debounceTimer;
         observer = new MutationObserver(() => {
           if (enforceLock) return;
@@ -443,7 +431,6 @@
           debounceTimer = setTimeout(() => {
             enforceLock = true;
             observer.disconnect();
-
             applyPatternData(storedPattern);
             if (currentSessionId && Array.isArray(storedPattern.analytics)) {
                 storedPattern.analytics.forEach(analyticsItem => {
@@ -461,7 +448,6 @@
             enforceLock = false;
           }, 200);
         });
-
         observer.observe(document.body, observeConfig);
       }
     })
@@ -475,13 +461,11 @@
       log("warn", "No stored pattern data to re-apply.");
       return;
     }
-
     log("info", "Manually re-applying stored pattern data.");
     if (observer) {
       enforceLock = true;
       observer.disconnect();
     }
-
     applyPatternData(storedPattern);
     if (currentSessionId && Array.isArray(storedPattern.analytics)) {
         storedPattern.analytics.forEach(analyticsItem => {
@@ -495,7 +479,6 @@
             });
         });
     }
-
     if (observer) {
       observer.observe(document.body, observeConfig);
       enforceLock = false;
