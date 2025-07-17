@@ -389,7 +389,7 @@
           body: JSON.stringify({
             pattern: patternIdFromQuery,
             userAgent: navigator.userAgent,
-            ipAddress: 'UNKNOWN'
+            debug,
           }),
           credentials: 'omit'
         });
