@@ -79,10 +79,11 @@
       return;
     }
     const analyticsPayload = { events: eventsToSend };
+    // Use fetch with keepalive and a 'simple' content-type to avoid CORS preflight issues.
     fetch(sessionEventsEndpoint(currentSessionId), {
         method: 'POST',
         headers: {
-            'Content-Type': 'application/json',
+            'Content-Type': 'text/plain',
         },
         body: JSON.stringify(analyticsPayload),
         credentials: 'omit',
@@ -281,15 +282,76 @@
     return observer;
   };
 
+  /**
+   * MODIFIED: This function now handles navigational clicks to ensure analytics are sent
+   * without triggering CORS preflight requests.
+   */
   const setupClickTracking = (element, analyticsId) => {
-    const handler = () => {
-      sendAnalyticsEvents([{
-        id: analyticsId,
-        eventType: 'click',
-        timestamp: new Date().toISOString()
-      }]);
-      log("info", `[Analytics] '${analyticsId}' clicked.`);
+    const handler = (event) => {
+      const link = event.target.closest('a');
+
+      const isNavigational = link &&
+                             link.href &&
+                             !link.href.startsWith(window.location.origin + '#') &&
+                             link.target !== '_blank' &&
+                             !link.protocol.startsWith('javascript');
+
+      if (!isNavigational) {
+        sendAnalyticsEvents([{
+          id: analyticsId,
+          eventType: 'click',
+          timestamp: new Date().toISOString()
+        }]);
+        log("info", `[Analytics] '${analyticsId}' non-navigational click tracked.`);
+        return;
+      }
+
+      log("info", `[Analytics] '${analyticsId}' navigational click detected.`);
+
+      const eventPayload = {
+        events: [{
+          id: analyticsId,
+          eventType: 'click',
+          timestamp: new Date().toISOString()
+        }]
+      };
+
+      if (!currentSessionId) {
+        log("warn", "[Analytics] No session ID, cannot send click event. Navigating as normal.");
+        return;
+      }
+
+      event.preventDefault();
+
+      const redirect = () => {
+        window.location.href = link.href;
+      };
+
+      if (navigator.sendBeacon) {
+        // FIXED: Use a Blob with 'text/plain' to prevent CORS preflight.
+        const blob = new Blob([JSON.stringify(eventPayload)], { type: 'text/plain' });
+        navigator.sendBeacon(sessionEventsEndpoint(currentSessionId), blob);
+        log("info", "[Analytics] Click event queued with sendBeacon. Redirecting.");
+        setTimeout(redirect, 100);
+      } else {
+        log("info", "[Analytics] Using fetch with keepalive as fallback. Redirecting after fetch.");
+        fetch(sessionEventsEndpoint(currentSessionId), {
+          method: 'POST',
+          headers: {
+            // Use 'text/plain' to prevent CORS preflight.
+            'Content-Type': 'text/plain'
+          },
+          body: JSON.stringify(eventPayload),
+          credentials: 'omit',
+          keepalive: true
+        }).catch(err => {
+          log("error", "[Analytics] Fetch fallback for click event failed:", err);
+        }).finally(() => {
+          redirect();
+        });
+      }
     };
+
     element.addEventListener('click', handler);
     return handler;
   };
@@ -356,10 +418,12 @@
     }
     if (eventsToSendImmediately.length > 0) {
         log("info", `[Analytics] Sending ${eventsToSendImmediately.length} events immediately on beforeunload.`);
-        if (currentSessionId) {
-            navigator.sendBeacon(sessionEventsEndpoint(currentSessionId), JSON.stringify({ events: eventsToSendImmediately }));
+        if (currentSessionId && navigator.sendBeacon) {
+            // FIXED: Use a Blob with 'text/plain' to prevent CORS preflight.
+            const blob = new Blob([JSON.stringify({ events: eventsToSendImmediately })], { type: 'text/plain' });
+            navigator.sendBeacon(sessionEventsEndpoint(currentSessionId), blob);
         } else {
-            log("warn", "[Analytics] Cannot send unload events: No session ID available.");
+            log("warn", "[Analytics] Cannot send unload events: No session ID or sendBeacon unavailable.");
         }
     }
   });
@@ -384,7 +448,7 @@
         const sessionResponse = await fetch(sessionCreateEndpoint, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
+            'Content-Type': 'text/plain',
           },
           body: JSON.stringify({
             pattern: patternIdFromQuery,
