@@ -79,11 +79,10 @@
       return;
     }
     const analyticsPayload = { events: eventsToSend };
-    // Use fetch with keepalive and a 'simple' content-type to avoid CORS preflight issues.
     fetch(sessionEventsEndpoint(currentSessionId), {
         method: 'POST',
         headers: {
-            'Content-Type': 'text/plain',
+            'Content-Type': 'application/json',
         },
         body: JSON.stringify(analyticsPayload),
         credentials: 'omit',
@@ -226,6 +225,37 @@
     }
   }
 
+  /**
+   * NEW: A dedicated function for sending critical, non-buffered events immediately.
+   * This is used specifically for click events that may lead to page unload.
+   */
+  function sendImmediateAnalyticsEvent(event) {
+    if (!currentSessionId) {
+      log("warn", "[Analytics] Cannot send immediate event: No session ID available.");
+      return;
+    }
+    const analyticsPayload = { events: [event] };
+    fetch(sessionEventsEndpoint(currentSessionId), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(analyticsPayload),
+        credentials: 'omit',
+        keepalive: true // This is the key to ensuring the request completes even on unload
+    })
+    .then(response => {
+        if (!response.ok) {
+            log("warn", `[Analytics] Failed to send immediate event (status: ${response.status})`);
+        } else {
+            log("info", `[Analytics] Immediate event sent successfully via fetch (keepalive).`);
+        }
+    })
+    .catch(error => {
+        log("error", "[Analytics] Error sending immediate event via fetch:", error);
+    });
+  }
+
   const endSectionDuration = (analyticsId, timestampISO) => {
     const timerData = sectionTimers.get(analyticsId);
     if (!timerData) return;
@@ -282,76 +312,37 @@
     return observer;
   };
 
-  /**
-   * MODIFIED: This function now handles navigational clicks to ensure analytics are sent
-   * without triggering CORS preflight requests.
-   */
   const setupClickTracking = (element, analyticsId) => {
     const handler = (event) => {
-      const link = event.target.closest('a');
-
-      const isNavigational = link &&
-                             link.href &&
-                             !link.href.startsWith(window.location.origin + '#') &&
-                             link.target !== '_blank' &&
-                             !link.protocol.startsWith('javascript');
-
-      if (!isNavigational) {
-        sendAnalyticsEvents([{
-          id: analyticsId,
-          eventType: 'click',
-          timestamp: new Date().toISOString()
-        }]);
-        log("info", `[Analytics] '${analyticsId}' non-navigational click tracked.`);
-        return;
-      }
-
-      log("info", `[Analytics] '${analyticsId}' navigational click detected.`);
-
-      const eventPayload = {
-        events: [{
-          id: analyticsId,
-          eventType: 'click',
-          timestamp: new Date().toISOString()
-        }]
+      const clickEventPayload = {
+        id: analyticsId,
+        eventType: 'click',
+        timestamp: new Date().toISOString()
       };
 
-      if (!currentSessionId) {
-        log("warn", "[Analytics] No session ID, cannot send click event. Navigating as normal.");
-        return;
-      }
+      // Check if the element is a link that will cause navigation
+      const isAnchor = element.tagName.toLowerCase() === 'a' && element.href;
+      if (isAnchor) {
+        // Prevent default navigation to ensure the analytics call can fire
+        event.preventDefault();
+        const href = element.href;
 
-      event.preventDefault();
+        // Send the event immediately using fetch with keepalive
+        sendImmediateAnalyticsEvent(clickEventPayload);
 
-      const redirect = () => {
-        window.location.href = link.href;
-      };
+        // A small delay to ensure the fetch call is initiated before redirecting
+        // Keepalive will handle the rest during the page transition.
+        setTimeout(() => {
+          log("info", `[Analytics] Navigating to: ${href}`);
+          window.location.href = href;
+        }, 50);
 
-      if (navigator.sendBeacon) {
-        // FIXED: Use a Blob with 'text/plain' to prevent CORS preflight.
-        const blob = new Blob([JSON.stringify(eventPayload)], { type: 'text/plain' });
-        navigator.sendBeacon(sessionEventsEndpoint(currentSessionId), blob);
-        log("info", "[Analytics] Click event queued with sendBeacon. Redirecting.");
-        setTimeout(redirect, 100);
       } else {
-        log("info", "[Analytics] Using fetch with keepalive as fallback. Redirecting after fetch.");
-        fetch(sessionEventsEndpoint(currentSessionId), {
-          method: 'POST',
-          headers: {
-            // Use 'text/plain' to prevent CORS preflight.
-            'Content-Type': 'text/plain'
-          },
-          body: JSON.stringify(eventPayload),
-          credentials: 'omit',
-          keepalive: true
-        }).catch(err => {
-          log("error", "[Analytics] Fetch fallback for click event failed:", err);
-        }).finally(() => {
-          redirect();
-        });
+        // For non-link elements, use the standard batched approach
+        sendAnalyticsEvents([clickEventPayload]);
+        log("info", `[Analytics] '${analyticsId}' clicked.`);
       }
     };
-
     element.addEventListener('click', handler);
     return handler;
   };
@@ -418,12 +409,29 @@
     }
     if (eventsToSendImmediately.length > 0) {
         log("info", `[Analytics] Sending ${eventsToSendImmediately.length} events immediately on beforeunload.`);
-        if (currentSessionId && navigator.sendBeacon) {
-            // FIXED: Use a Blob with 'text/plain' to prevent CORS preflight.
-            const blob = new Blob([JSON.stringify({ events: eventsToSendImmediately })], { type: 'text/plain' });
-            navigator.sendBeacon(sessionEventsEndpoint(currentSessionId), blob);
+        if (currentSessionId) {
+            // Replaced navigator.sendBeacon with fetch with keepalive: true
+            fetch(sessionEventsEndpoint(currentSessionId), {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ events: eventsToSendImmediately }),
+              credentials: 'omit',
+              keepalive: true
+            })
+            .then(response => {
+              if (!response.ok) {
+                  log("warn", `[Analytics] Failed to send unload events (status: ${response.status})`);
+              } else {
+                  log("info", `[Analytics] Unload events sent successfully via fetch (keepalive).`);
+              }
+            })
+            .catch(error => {
+              log("error", "[Analytics] Error sending unload events via fetch:", error);
+            });
         } else {
-            log("warn", "[Analytics] Cannot send unload events: No session ID or sendBeacon unavailable.");
+            log("warn", "[Analytics] Cannot send unload events: No session ID available.");
         }
     }
   });
@@ -448,7 +456,7 @@
         const sessionResponse = await fetch(sessionCreateEndpoint, {
           method: 'POST',
           headers: {
-            'Content-Type': 'text/plain',
+            'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             pattern: patternIdFromQuery,
